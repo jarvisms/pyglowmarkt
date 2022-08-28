@@ -17,6 +17,8 @@ class Rate:
 class Pence:
     def __init__(self, value):
         self.value = value
+    def __repr__(self):
+        return f"Pence({self.value})"
     def __str__(self):
         return ("%s p" % self.value) if isinstance(self.value, str) else ("%.2f p" % self.value)
     def unit(self):
@@ -25,6 +27,8 @@ class Pence:
 class KWH:
     def __init__(self, value):
         self.value = value
+    def __repr__(self):
+        return f"KWH({self.value})"
     def __str__(self):
         return ("%s kWh" % self.value) if isinstance(self.value, str) else ("%.3f kWh" % self.value)
     def unit(self):
@@ -33,12 +37,16 @@ class KWH:
 class Unknown:
     def __init__(self, value):
         self.value = value
+    def __repr__(self):
+        return f"Unknown({self.value})"
     def __str__(self):
         return "%s" % self.value
     def unit(self):
         return "unknown"
 
 class VirtualEntity:
+    def __repr__(self):
+        return f"<glowmarkt VirtualEntity {self.id} '{self.name}'>"
     def get_resources(self):
         return self.client.get_resources(self.id)
 
@@ -46,10 +54,16 @@ class Tariff:
     pass
 
 class Resource:
+    def __repr__(self):
+        return f"<glowmarkt Resource {self.id} '{self.name}'"
     def get_readings(self, t_from, t_to, period, func="sum", nulls=False):
         return self.client.get_readings(self.id, t_from, t_to, period, func, nulls)
     def get_current(self):
         return self.client.get_current(self.id)
+    def last_time(self):
+        return self.client.last_time(self.id)
+    def first_time(self):
+        return self.client.first_time(self.id)
     def get_meter_reading(self):
         return self.client.get_meter_reading(self.id)
     def get_tariff(self):
@@ -300,6 +314,55 @@ class BrightClient:
             datetime.datetime.fromtimestamp(resp["data"][0][0], tz=utc).astimezone(),
             cls(resp["data"][0][1])
         ]
+
+    def last_time(self, resource):
+
+        # Get the timeof the more recent available reading
+
+        headers = {
+            "Content-Type": "application/json",
+            "applicationId": self.application,
+            "token": self.token
+        }
+
+        utc = datetime.timezone.utc
+
+        url = f"{self.url}resource/{resource}/last-time"
+
+        resp = self.session.get(url, headers=headers)
+
+        if resp.status_code != 200:
+            print(resp.text)
+            raise RuntimeError("Request failed")
+
+        resp = resp.json()
+
+        return datetime.datetime.fromtimestamp(resp["data"]["lastTs"], tz=utc).astimezone()
+
+    def first_time(self, resource):
+
+        # Get the time of the first available reading
+
+        headers = {
+            "Content-Type": "application/json",
+            "applicationId": self.application,
+            "token": self.token
+        }
+
+        utc = datetime.timezone.utc
+
+        url = f"{self.url}resource/{resource}/first-time"
+
+        resp = self.session.get(url, headers=headers)
+
+        if resp.status_code != 200:
+            print(resp.text)
+            raise RuntimeError("Request failed")
+
+        resp = resp.json()
+
+        return datetime.datetime.fromtimestamp(resp["data"]["firstTs"], tz=utc).astimezone()
+
 
     def catchup(self, resource):
 
