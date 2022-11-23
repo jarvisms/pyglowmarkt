@@ -55,7 +55,7 @@ class Tariff:
 
 class Resource:
     def __repr__(self):
-        return f"<glowmarkt Resource {self.id} '{self.name}'"
+        return f"<glowmarkt Resource {self.id} '{self.name}'>"
     def get_readings(self, t_from, t_to, period, func="sum", nulls=False):
         return self.client.get_readings(self.id, t_from, t_to, period, func, nulls)
     def get_current(self):
@@ -72,6 +72,8 @@ class Resource:
         return self.client.round(when, period)
     def catchup(self):
         return self.client.catchup(self.id)
+    def largereadings(self, t_from, t_to, period, func="sum", nulls=False):
+        return self.client.largereadings(self, t_from, t_to, period, func, nulls)
 
 class BrightClient:
     def __init__(self, username, password):
@@ -273,7 +275,7 @@ class BrightClient:
         return [
             [datetime.datetime.fromtimestamp(v[0], tz=utc).astimezone(),     # Timezone and DST aware datetime in local timezone converted from server side UTC
              cls(v[1])]
-            for v in resp["data"] if v[1] is not None   # v[1] is None when nulls=1 and no data exists, so it simply wont be included in the returned list
+            for v in resp["data"]   # v[1] is None when nulls=1 and no data exists
         ]
 
     def get_current(self, resource):
@@ -470,3 +472,131 @@ class BrightClient:
         
         return t
 
+    def largereadings(self, resource, t_from=None, t_to=None, period=PT30M, func="sum", nulls=False):
+        """
+        Returns a list of readings for the resource and timespan.
+        Output should be the same as for 'get_readings' and arguments are also the same.
+
+        A potentially very large query will be chunked into numerous smaller transactions
+        using the 'get_readings' method based on the time limit for the period parameter
+        and provides the result as if one single transaction was completed;
+        a very large list of readings from all constituent underlying transactions.
+
+        This method utilises the simpler 'get_readings' method and all other arguments are
+        as per 'get_readings' and are passed through.
+
+        This method can be used as a seamless replacement for 'get_readings'
+        """
+        timeLimits = {  # These limits are from the API spec
+                PT30M   : datetime.timedelta(days=10),
+                PT1H    : datetime.timedelta(days=31),
+                P1D     : datetime.timedelta(days=31),
+                P1W     : datetime.timedelta(weeks=6),
+                P1M     : datetime.timedelta(days=366),
+                P1Y     : datetime.timedelta(days=366),
+        }
+        periodTimedelta = {
+                PT30M   : datetime.timedelta(minutes=30),
+                PT1H    : datetime.timedelta(hours=1),
+                P1D     : datetime.timedelta(days=1),
+                P1W     : datetime.timedelta(days=7),
+                P1M     : datetime.timedelta(days=31),  # Month lengths are accounted for later
+                P1Y     : datetime.timedelta(days=366), # Accounts for leap years
+        }
+        period = period.upper()
+        if period not in timeLimits:
+            raise TypeError("The period is not supported")
+        ptd = periodTimedelta[period]
+        maxwindow = timeLimits[period]
+        if maxwindow < ptd:
+            raise TypeError("Max window is smaller than the period")
+        if None in (t_from, t_to):
+            raise TypeError("You must explicitly provide a t_from and t_to")
+        if isinstance(t_from, datetime.datetime):
+            t_from = t_from.astimezone(datetime.timezone.utc)
+        elif isinstance(t_from, datetime.date):
+            t_from = datetime.datetime.combine(t_from, datetime.time(), datetime.timezone.utc)
+        else:
+            raise TypeError("t_from isn't a 'date' or 'datetime' instance")
+        if isinstance(t_to, datetime.datetime):
+            t_to = t_to.astimezone(datetime.timezone.utc)
+        elif isinstance(t_to, datetime.date):
+            t_to = datetime.datetime.combine(t_to, datetime.time(), datetime.timezone.utc)
+        else:
+            raise TypeError("t_to isn't a 'date' or 'datetime' instance")
+        if t_to < t_from: # Swap dates if reversed
+            t_from, t_to = t_to, t_from
+        elif t_to == t_from:
+            raise TypeError("t_from and t_to are the same")
+        if (
+            (period == PT30M and not ( # Check its a clean half hour
+            t_to.microsecond == t_to.second == t_from.microsecond == t_from.second == 0 and
+            t_from.minute in (0,30) and t_to.minute in (0,30)
+            )) or
+            (period == PT1H and not ( # Check its a clean hour
+            t_to.microsecond == t_to.second == t_to.minute == t_from.microsecond == t_from.second == t_from.minute == 0
+            )) or
+            (period == P1D and not ( # Check its a clean day
+            t_to.microsecond == t_to.second == t_to.minute == t_to.hour == t_from.microsecond == t_from.second == t_from.minute == t_from.hour == 0
+            )) or
+            (period == P1W and not ( # Check its a clean week starting on Monday and ending on Sunday
+            t_to.microsecond == t_to.second == t_to.minute == t_to.hour == t_from.microsecond == t_from.second == t_from.minute == t_from.hour == 0 and
+            (t_from.weekday(), t_to.weekday()) == (0,6)
+            )) or
+            (period == P1M and not ( # Check its a clean month starting on the 1st and ending on whatever the last day of the month is for that month and year
+            t_to.microsecond == t_to.second == t_to.minute == t_to.hour == t_from.microsecond == t_from.second == t_from.minute == t_from.hour == 0 and
+            t_from.day == 1 and t_to.day == ((t_to.replace(month=t_to.month+1, day=1) if t_to.month < 12 else t_to.replace(year=t_to.year+1, month=1, day=1)) - datetime.timedelta(days=1)).day
+            )) or
+            (period == P1Y and not ( # Check its a clean year starting on the 1st Jan and ending on 31st Dec
+            t_to.microsecond == t_to.second == t_to.minute == t_to.hour == t_from.microsecond == t_from.second == t_from.minute == t_from.hour == 0 and
+            t_from.day == 1 and t_from.month == 1 and t_to.day == 31 and t_to.month == 12
+            ))
+            ):
+            raise TypeError("t_from and t_to must be aligned with the period")
+        reqwindow = t_to - t_from # Requested window/duration
+        print(f"{reqwindow} requested and the maximum limit is {maxwindow} for {period}")
+        if reqwindow <= maxwindow: # If the period is smaller than max, use directly
+            print("Only 1 transaction is needed")
+            return resource.get_readings(t_from=t_from, t_to=t_to, period=period, func=func, nulls=nulls)
+        else:   # If the period is larger than max, then break it down
+            if period == P1M:
+                reqperiods = (t_to.year-t_from.year)*12 + (t_to.month-t_from.month) + 1 # Requested duration counted in months
+            else:
+                reqperiods = reqwindow // ptd # Requested duration in periods
+            maxperiods = maxwindow // ptd # Maximum duration in periods
+            d = 2   # Start by dividing into 2 intervals, since 1 was tested above
+            while True:
+                # Divide into incrementally more/smaller peices and check
+                i, r = divmod(reqperiods, d)
+                # Once the peices are small enough, stop.
+                # If there is no remainder, take i, otherwise the remainders will
+                # be added to other peices so add 1 and check that instead.
+                if (i+1 if r else i) <= maxperiods: break
+                d += 1
+            # Make a list of HH sample sizes, with the remainders added onto the
+            # first sets. Such as 11, 11, 10 for a total of 32.
+            periodsBlocks = [i+1]*r + [i]*(d-r)
+            print(f"{len(periodsBlocks)} transactions will be used")
+            Intervals=[]
+            IntervalStart = t_from   # The first t_from is the original start
+            if period == P1M:
+                for i in periodsBlocks:
+                    # Add calculated number of half hours on to the start time
+                    IntervalEnd = IntervalStart + i * ptd
+                    IntervalEnd = IntervalEnd.replace(day=1) - datetime.timedelta(days=1)
+                    # Define each sample window and start the next one after the last
+                    Intervals.append({"t_from":IntervalStart,"t_to":IntervalEnd})
+                    IntervalStart = IntervalEnd + datetime.timedelta(days=1)
+            else:
+                for i in periodsBlocks:
+                    # Add calculated number of half hours on to the start time
+                    IntervalEnd = IntervalStart + i * ptd
+                    # Define each sample window and start the next one after the last
+                    Intervals.append({"t_from":IntervalStart,"t_to":IntervalEnd})
+                    IntervalStart = IntervalEnd + ptd
+        # Gather results
+        result = []
+        for chunk in Intervals:
+            chunkresult = resource.get_readings(period=period, **chunk, func=func, nulls=nulls)
+            result.extend(chunkresult)
+        return result
