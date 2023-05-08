@@ -488,6 +488,7 @@ class BrightClient:
         This method can be used as a seamless replacement for 'get_readings'
         """
         timeLimits = {  # These limits are from the API spec
+                PT1M    : datetime.timedelta(days=2, hours=23, minutes=59), # Found empirically, not in spec
                 PT30M   : datetime.timedelta(days=10),
                 PT1H    : datetime.timedelta(days=31),
                 P1D     : datetime.timedelta(days=31),
@@ -496,6 +497,7 @@ class BrightClient:
                 P1Y     : datetime.timedelta(days=366),
         }
         periodTimedelta = {
+                PT1M    : datetime.timedelta(minutes=1),
                 PT30M   : datetime.timedelta(minutes=30),
                 PT1H    : datetime.timedelta(hours=1),
                 P1D     : datetime.timedelta(days=1),
@@ -529,6 +531,9 @@ class BrightClient:
         elif t_to == t_from:
             raise TypeError("t_from and t_to are the same")
         if (
+            (period == PT1M and not ( # Check its a clean minute
+            t_to.microsecond == t_to.second == t_from.microsecond == t_from.second == 0
+            )) or
             (period == PT30M and not ( # Check its a clean half hour
             t_to.microsecond == t_to.second == t_from.microsecond == t_from.second == 0 and
             t_from.minute in (0,30) and t_to.minute in (0,30)
